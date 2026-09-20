@@ -13,12 +13,19 @@ function nextResponse(responses: Response[]): Response {
 describe("DatabricksDatabase", () => {
   it("maps point reads and query rows to DALgo records", async () => {
     const responses = [
-      json({ statement_id: "one", status: { state: "SUCCEEDED" }, manifest: { schema: { columns: [{ name: "id" }, { name: "done" }] } }, result: { data_array: [["a", true]] } }),
-      json({ statement_id: "two", status: { state: "SUCCEEDED" }, manifest: { schema: { columns: [{ name: "id" }, { name: "done" }] } }, result: { data_array: [["a", true]] } }),
+      json({ statement_id: "one", status: { state: "SUCCEEDED" }, manifest: { schema: { columns: [{ name: "id" }, { name: "done" }] } }, result: { data_array: [["a", "true"]] } }),
+      json({ statement_id: "two", status: { state: "SUCCEEDED" }, manifest: { schema: { columns: [{ name: "id" }, { name: "done" }] } }, result: { data_array: [["a", "true"]] } }),
     ];
     const database = new DatabricksDatabase({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", fetch: () => Promise.resolve(nextResponse(responses)) });
-    await expect(database.get(key("items", "a"))).resolves.toMatchObject({ exists: true, key: { collection: "items", id: "a" }, data: { id: "a", done: true } });
+    await expect(database.get(key("items", "a"))).resolves.toMatchObject({ exists: true, key: { collection: "items", id: "a" }, data: { id: "a", done: "true" } });
     await expect(database.query(collection<{ readonly id: string; readonly done: boolean }>("items").query().build()))
-      .resolves.toMatchObject({ records: [{ exists: true, key: { collection: "items", id: "a" }, data: { id: "a", done: true } }] });
+      .resolves.toMatchObject({ records: [{ exists: true, key: { collection: "items", id: "a" }, data: { id: "a", done: "true" } }] });
+  });
+
+  it("rejects non-safe numeric keys and transaction callbacks asynchronously", async () => {
+    const database = new DatabricksDatabase({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", fetch: () => Promise.resolve(json({})) });
+    await expect(database.get(key("items", Number.MAX_SAFE_INTEGER + 1))).rejects.toThrow("non-safe numeric DALgo keys");
+    const transaction = database.runReadwriteTransaction(() => Promise.resolve("never"));
+    await expect(transaction).rejects.toThrow("read-write transactions");
   });
 });

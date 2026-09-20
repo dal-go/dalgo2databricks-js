@@ -20,6 +20,9 @@ function safeInteger(value: unknown, label: string): number {
 }
 
 export function tableIdentifier(collection: string, catalog?: string, schema?: string): string {
+  if (catalog !== undefined && schema === undefined) {
+    throw new TypeError("catalog requires schema so the table path is unambiguous");
+  }
   return [catalog, schema, collection]
     .filter((part): part is string => part !== undefined)
     .map((part) => identifier(part, "table path segment"))
@@ -33,11 +36,10 @@ export function keyTable(key: Key, catalog?: string, schema?: string): string {
 
 function parameter(value: unknown, number: number): StatementParameter {
   const name = `p${String(number)}`;
-  if (value === null) return { name, value: "", type: "VOID" };
   if (typeof value === "string") return { name, value, type: "STRING" };
   if (typeof value === "boolean") return { name, value: String(value), type: "BOOLEAN" };
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return { name, value: String(value), type: Number.isInteger(value) ? "BIGINT" : "DOUBLE" };
+  if (typeof value === "number" && Number.isSafeInteger(value)) {
+    return { name, value: String(value), type: "BIGINT" };
   }
   throw new UnsupportedError("Databricks SQL parameter value type");
 }
@@ -48,8 +50,14 @@ function compileFilter<T>(filter: QueryFilter<T>, parameters: StatementParameter
   const operators: Readonly<Record<string, string>> = {
     "==": "=", "!=": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
   };
+  if (!Object.hasOwn(operators, filter.operator)) throw new UnsupportedError(`Databricks SQL query operator ${filter.operator}`);
   const operator = operators[filter.operator];
   if (operator === undefined) throw new UnsupportedError(`Databricks SQL query operator ${filter.operator}`);
+  if (filter.value === null) {
+    if (filter.operator === "==") return `${field} IS NULL`;
+    if (filter.operator === "!=") return `${field} IS NOT NULL`;
+    throw new UnsupportedError("null comparisons other than equality");
+  }
   const item = parameter(filter.value, parameters.length);
   parameters.push(item);
   return `${field} ${operator} :${item.name}`;
@@ -71,7 +79,11 @@ export function compileDatabricksQuery<T>(
   const where = query.filters.map((filter) => compileFilter(filter, parameters));
   const orders = query.orders.map((order) => {
     if (order.field === DOCUMENT_ID) throw new UnsupportedError("DALgo document-id ordering on relational tables");
-    return `${identifier(String(order.field), "order field")} ${order.direction.toUpperCase()}`;
+    const direction: unknown = order.direction;
+    if (direction !== "asc" && direction !== "desc") {
+      throw new TypeError("order direction must be asc or desc");
+    }
+    return `${identifier(String(order.field), "order field")} ${direction.toUpperCase()}`;
   });
   const limit = query.limit === undefined ? "" : ` LIMIT ${String(safeInteger(query.limit, "limit"))}`;
   const offset = query.offset === undefined || query.offset === 0 ? "" : ` OFFSET ${String(safeInteger(query.offset, "offset"))}`;

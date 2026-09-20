@@ -34,6 +34,9 @@ export class DatabricksDatabase implements Database {
   }
 
   public async get<T>(key: Key, codec?: Codec<T>): Promise<RecordSnapshot<T>> {
+    if (typeof key.id === "number" && !Number.isSafeInteger(key.id)) {
+      throw new UnsupportedError("non-safe numeric DALgo keys");
+    }
     const statement = `SELECT * FROM ${keyTable(key, this.#catalog, this.#schema)} WHERE ${this.#quotedIdColumn} = :p0 LIMIT 2`;
     const parameters: readonly StatementParameter[] = [{
       name: "p0", value: String(key.id), type: typeof key.id === "number" ? "BIGINT" : "STRING",
@@ -57,7 +60,7 @@ export class DatabricksDatabase implements Database {
     const records = result.rows.map((row): ExistingRecord<T> => {
       const data = rowObject(result.columns, row);
       const id = data[this.#idColumn];
-      if (typeof id !== "string" && typeof id !== "number") {
+      if (typeof id !== "string" && (typeof id !== "number" || !Number.isSafeInteger(id))) {
         throw new DatabricksSqlError(`query result did not include a string or numeric ${this.#idColumn} column`);
       }
       return {
@@ -72,6 +75,6 @@ export class DatabricksDatabase implements Database {
   public runReadwriteTransaction<Result>(
     _callback: (transaction: ReadwriteTransaction) => Promise<Result>,
   ): Promise<Result> {
-    throw new UnsupportedError("Databricks SQL Statement Execution read-write transactions");
+    return Promise.reject(new UnsupportedError("Databricks SQL Statement Execution read-write transactions"));
   }
 }

@@ -17,7 +17,7 @@ describe("DatabricksStatementClient", () => {
     const responses = [
       json({ statement_id: "stmt-1", status: { state: "PENDING" } }),
       json({ statement_id: "stmt-1", status: { state: "SUCCEEDED" }, manifest: { schema: { columns: [{ name: "id" }] } }, result: { data_array: [["a"]], next_chunk_internal_link: "/api/2.0/sql/statements/stmt-1/result/chunks/1" } }),
-      json({ statement_id: "stmt-1", status: { state: "SUCCEEDED" }, result: { data_array: [["b"]] } }),
+      json({ statement_id: "stmt-1", status: { state: "SUCCEEDED" }, data_array: [["b"]] }),
     ];
     const fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       requests.push(new Request(input, init));
@@ -51,5 +51,65 @@ describe("DatabricksStatementClient", () => {
     }));
     const unsafe = new DatabricksStatementClient({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "secret", fetch: unsafeFetch });
     await expect(unsafe.execute({ statement: "SELECT 1" })).rejects.toBeInstanceOf(DatabricksSqlError);
+  });
+
+  it("does not reflect credentials or server error details in thrown errors", async () => {
+    const failedStatement = new DatabricksStatementClient({
+      host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token-value",
+      fetch: () => Promise.resolve(json({ statement_id: "stmt-1", status: { state: "FAILED", error: { message: "server secret: token-value" } } })),
+    });
+    await expect(failedStatement.execute({ statement: "SELECT 1" })).rejects.toThrow("Databricks statement stmt-1 FAILED");
+    await expect(failedStatement.execute({ statement: "SELECT 1" })).rejects.not.toThrow("token-value");
+
+    const failedHttp = new DatabricksStatementClient({
+      host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token-value",
+      fetch: () => Promise.resolve(new Response(JSON.stringify({ error: "server secret: token-value" }), { status: 401 })),
+    });
+    await expect(failedHttp.execute({ statement: "SELECT 1" })).rejects.toThrow("Databricks HTTP 401 request failed");
+    await expect(failedHttp.execute({ statement: "SELECT 1" })).rejects.not.toThrow("token-value");
+
+    const providerFailure = new DatabricksStatementClient({
+      host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => { throw new Error("token-value"); }, fetch: () => Promise.resolve(json({})),
+    });
+    await expect(providerFailure.execute({ statement: "SELECT 1" })).rejects.toThrow("Databricks token provider failed");
+
+    const fetchFailure = new DatabricksStatementClient({
+      host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token-value", fetch: () => Promise.reject(new Error("token-value")),
+    });
+    await expect(fetchFailure.execute({ statement: "SELECT 1" })).rejects.toThrow("Databricks HTTP request failed");
+  });
+
+  it("enforces result manifest completeness, widths, chunk bounds, and cycles", async () => {
+    const incomplete = new DatabricksStatementClient({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", fetch: () => Promise.resolve(json({ statement_id: "stmt-1", status: { state: "SUCCEEDED" }, manifest: { total_chunk_count: 2, total_row_count: 2, schema: { columns: [{ name: "id" }] } }, result: { data_array: [["a"]] } })) });
+    await expect(incomplete.execute({ statement: "SELECT 1" })).rejects.toThrow("result chunks are incomplete");
+
+    const badWidth = new DatabricksStatementClient({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", fetch: () => Promise.resolve(json({ statement_id: "stmt-1", status: { state: "SUCCEEDED" }, manifest: { schema: { columns: [{ name: "id" }] } }, result: { data_array: [["a", "b"]] } })) });
+    await expect(badWidth.execute({ statement: "SELECT 1" })).rejects.toThrow("invalid JSON_ARRAY row");
+
+    const truncated = new DatabricksStatementClient({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", fetch: () => Promise.resolve(json({ statement_id: "stmt-1", status: { state: "SUCCEEDED" }, manifest: { truncated: true, schema: { columns: [{ name: "id" }] } }, result: { data_array: [] } })) });
+    await expect(truncated.execute({ statement: "SELECT 1" })).rejects.toThrow("truncated result");
+
+    const shortRows = new DatabricksStatementClient({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", fetch: () => Promise.resolve(json({ statement_id: "stmt-1", status: { state: "SUCCEEDED" }, manifest: { total_row_count: 2, schema: { columns: [{ name: "id" }] } }, result: { data_array: [["a"]] } })) });
+    await expect(shortRows.execute({ statement: "SELECT 1" })).rejects.toThrow("result rows are incomplete");
+
+    const overCap = new DatabricksStatementClient({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", maxResultChunks: 1, fetch: () => Promise.resolve(json({ statement_id: "stmt-1", status: { state: "SUCCEEDED" }, manifest: { total_chunk_count: 2, schema: { columns: [{ name: "id" }] } }, result: { data_array: [] } })) });
+    await expect(overCap.execute({ statement: "SELECT 1" })).rejects.toThrow("result chunk limit");
+
+    const cycleResponses = [
+      json({ statement_id: "stmt-1", status: { state: "SUCCEEDED" }, manifest: { schema: { columns: [{ name: "id" }] } }, result: { data_array: [["a"]], next_chunk_internal_link: "/api/2.0/sql/statements/stmt-1/result/chunks/1" } }),
+      json({ data_array: [["b"]], next_chunk_internal_link: "/api/2.0/sql/statements/stmt-1/result/chunks/1" }),
+    ];
+    const cycle = new DatabricksStatementClient({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", fetch: () => Promise.resolve(nextResponse(cycleResponses)) });
+    await expect(cycle.execute({ statement: "SELECT 1" })).rejects.toThrow("cycle detected");
+  });
+
+  it("honors cancellation and an operation deadline even when fetch ignores abort", async () => {
+    const aborter = new AbortController();
+    aborter.abort();
+    const aborted = new DatabricksStatementClient({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", signal: aborter.signal, fetch: () => Promise.resolve(json({})) });
+    await expect(aborted.execute({ statement: "SELECT 1" })).rejects.toThrow("operation aborted");
+
+    const timeout = new DatabricksStatementClient({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", timeoutMs: 1, fetch: () => new Promise<Response>(() => undefined) });
+    await expect(timeout.execute({ statement: "SELECT 1" })).rejects.toThrow("operation deadline exceeded");
   });
 });
