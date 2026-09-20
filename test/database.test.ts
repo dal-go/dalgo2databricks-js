@@ -4,6 +4,24 @@ import { DatabricksDatabase } from "../src/index.js";
 
 function json(value: unknown): Response { return new Response(JSON.stringify(value), { status: 200 }); }
 
+const statementId = "018f8e37-7a47-4e6d-9c2a-91fd1a13cd88";
+
+function complete(columns: readonly string[], rows: readonly (readonly unknown[])[]): object {
+  return {
+    statement_id: statementId,
+    status: { state: "SUCCEEDED" },
+    manifest: {
+      format: "JSON_ARRAY",
+      truncated: false,
+      total_chunk_count: 1,
+      total_row_count: rows.length,
+      schema: { columns: columns.map((name) => ({ name })) },
+      chunks: [{ chunk_index: 0, row_offset: 0, row_count: rows.length }],
+    },
+    result: { chunk_index: 0, row_offset: 0, row_count: rows.length, data_array: rows },
+  };
+}
+
 function nextResponse(responses: Response[]): Response {
   const response = responses.shift();
   if (response === undefined) throw new Error("test response queue exhausted");
@@ -13,8 +31,8 @@ function nextResponse(responses: Response[]): Response {
 describe("DatabricksDatabase", () => {
   it("maps point reads and query rows to DALgo records", async () => {
     const responses = [
-      json({ statement_id: "one", status: { state: "SUCCEEDED" }, manifest: { schema: { columns: [{ name: "id" }, { name: "done" }] } }, result: { data_array: [["a", "true"]] } }),
-      json({ statement_id: "two", status: { state: "SUCCEEDED" }, manifest: { schema: { columns: [{ name: "id" }, { name: "done" }] } }, result: { data_array: [["a", "true"]] } }),
+      json(complete(["id", "done"], [["a", "true"]])),
+      json(complete(["id", "done"], [["a", "true"]])),
     ];
     const database = new DatabricksDatabase({ host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", fetch: () => Promise.resolve(nextResponse(responses)) });
     await expect(database.get(key("items", "a"))).resolves.toMatchObject({ exists: true, key: { collection: "items", id: "a" }, data: { id: "a", done: "true" } });

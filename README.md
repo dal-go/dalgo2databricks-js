@@ -10,7 +10,16 @@ The adapter sends an OAuth or PAT value only as an `Authorization: Bearer` heade
 
 ## Install
 
-This package is not yet published to npm. Consume the repository source or a pinned Git revision until a release is published.
+This package is not yet published to npm. Consume a pinned Git revision until a release is published. pnpm 11 requires allowlisting build scripts for both the adapter Git dependency and its pinned DALgo Git development dependency. For the currently reviewed source revision, use:
+
+```yaml
+# pnpm-workspace.yaml
+allowBuilds:
+  "@dal-go/dalgo2databricks@https://codeload.github.com/dal-go/dalgo2databricks-js/tar.gz/f4a71bd": true
+  "@dal-go/dalgo@https://codeload.github.com/dal-go/dalgo-js/tar.gz/04ce7f644fc334da7e471f0be503a7b937c7025d": true
+```
+
+When pinning a newer adapter commit, replace only the adapter tarball revision with the exact revision shown in that dependency's lockfile.
 
 ## Use
 
@@ -27,7 +36,7 @@ const db = new DatabricksDatabase({
 });
 
 await db.get(key("items", "item-1"));
-await db.query(collection<{ id: string; done: boolean }>("items")
+await db.query(collection<{ readonly id: string; readonly done: string | null }>("items")
   .query().where("done", "==", false).orderBy("id").limit(20).build());
 ```
 
