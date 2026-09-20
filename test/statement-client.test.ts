@@ -103,6 +103,14 @@ describe("DatabricksStatementClient", () => {
     await expect(fetchFailure.execute({ statement: "SELECT 1" })).rejects.toThrow("Databricks HTTP request failed");
     await expect(fetchFailure.execute({ statement: "SELECT 1" })).rejects.not.toThrow(secret);
 
+    const aborter = new AbortController();
+    const injectedAbort = new DatabricksStatementClient({
+      host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", signal: aborter.signal,
+      fetch: () => { aborter.abort(); throw new DatabricksSqlError(secret); },
+    });
+    await expect(injectedAbort.execute({ statement: "SELECT 1" })).rejects.toThrow("Databricks operation aborted");
+    await expect(injectedAbort.execute({ statement: "SELECT 1" })).rejects.not.toThrow(secret);
+
     const malformedHandle = new DatabricksStatementClient({
       host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token",
       fetch: () => Promise.resolve(json({ statement_id: secret, status: { state: "FAILED" } })),
@@ -147,6 +155,12 @@ describe("DatabricksStatementClient", () => {
       })),
     });
     await expect(outOfSequence.execute({ statement: "SELECT 1" })).rejects.toThrow("out of sequence");
+
+    const nonStringCell = new DatabricksStatementClient({
+      host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token",
+      fetch: () => Promise.resolve(json(complete(["id"], [[{ unexpected: true }]]))),
+    });
+    await expect(nonStringCell.execute({ statement: "SELECT 1" })).rejects.toThrow("non-string JSON_ARRAY cell");
   });
 
   it("bounds token acquisition, fetch, and response bodies with one operation deadline", async () => {
@@ -161,6 +175,14 @@ describe("DatabricksStatementClient", () => {
       fetch: () => Promise.resolve({ ok: true, status: 200, json: () => new Promise<unknown>(() => undefined) } as Response),
     });
     await expect(pendingBody.execute({ statement: "SELECT 1" })).rejects.toThrow("operation deadline exceeded");
+  });
+
+  it("accepts a valid inline JSON_ARRAY chunk with more than 150 thousand rows", async () => {
+    const rows = Array.from({ length: 150_000 }, (_, index): readonly string[] => [String(index)]);
+    const client = new DatabricksStatementClient({
+      host: "https://dbc.example", warehouseId: "wh", tokenProvider: () => "token", fetch: () => Promise.resolve(json(complete(["id"], rows))),
+    });
+    await expect(client.execute({ statement: "SELECT id FROM items" })).resolves.toMatchObject({ statementId, columns: ["id"] });
   });
 
   it("rejects unsafe timer values before making a request", () => {

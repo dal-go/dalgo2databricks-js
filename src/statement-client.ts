@@ -155,7 +155,7 @@ export class DatabricksStatementClient {
       if (chunk.index !== expected.index || chunk.offset !== expected.offset || chunk.count !== expected.count || chunk.rows.length !== expected.count) {
         throw new DatabricksSqlError("Databricks result chunk did not match its manifest");
       }
-      rows.push(...chunk.rows);
+      for (const row of chunk.rows) rows.push(row);
       const isLast = position === manifest.chunks.length - 1;
       if (isLast) {
         if (chunk.next !== undefined) throw new DatabricksSqlError("Databricks result contained an unexpected result chunk link");
@@ -209,6 +209,7 @@ export class DatabricksStatementClient {
     if (!Array.isArray(result.data_array)) throw new DatabricksSqlError("Databricks result chunk omitted JSON_ARRAY data");
     const rows = result.data_array.map((row) => {
       if (!Array.isArray(row) || row.length !== columnCount) throw new DatabricksSqlError("Databricks result chunk had an invalid JSON_ARRAY row");
+      if (row.some((cell) => typeof cell !== "string" && cell !== null)) throw new DatabricksSqlError("Databricks result chunk had a non-string JSON_ARRAY cell");
       return row as readonly unknown[];
     });
     const next = result.next_chunk_internal_link;
@@ -263,8 +264,8 @@ export class DatabricksStatementClient {
     let token: string;
     try {
       token = await this.#awaitActive(Promise.resolve().then(this.#options.tokenProvider), context);
-    } catch (error: unknown) {
-      if (error instanceof DatabricksSqlError && context.signal.aborted) throw error;
+    } catch {
+      if (context.signal.aborted) this.#assertActive(context);
       throw new DatabricksSqlError("Databricks token provider failed");
     }
     this.#assertActive(context);
@@ -272,15 +273,15 @@ export class DatabricksStatementClient {
     let response: Response;
     try {
       response = await this.#awaitActive(this.#fetch(new URL(path, this.#baseUrl), { ...init, signal: context.signal, redirect: "error", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }), context);
-    } catch (error: unknown) {
-      if (error instanceof DatabricksSqlError && context.signal.aborted) throw error;
+    } catch {
+      if (context.signal.aborted) this.#assertActive(context);
       throw new DatabricksSqlError("Databricks HTTP request failed");
     }
     let body: unknown;
     try {
       body = await this.#awaitActive(response.json(), context);
-    } catch (error: unknown) {
-      if (error instanceof DatabricksSqlError && context.signal.aborted) throw error;
+    } catch {
+      if (context.signal.aborted) this.#assertActive(context);
       throw new DatabricksSqlError("Databricks HTTP response body was invalid");
     }
     if (!response.ok) throw new DatabricksSqlError(`Databricks HTTP ${String(response.status)} request failed`);

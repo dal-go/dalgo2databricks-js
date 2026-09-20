@@ -15,11 +15,11 @@ This package is not yet published to npm. Consume a pinned Git revision until a 
 ```yaml
 # pnpm-workspace.yaml
 allowBuilds:
-  "@dal-go/dalgo2databricks@https://codeload.github.com/dal-go/dalgo2databricks-js/tar.gz/f4a71bd": true
+  "@dal-go/dalgo2databricks@https://codeload.github.com/dal-go/dalgo2databricks-js/tar.gz/REPLACE_WITH_EXACT_40_CHARACTER_ADAPTER_COMMIT_SHA": true
   "@dal-go/dalgo@https://codeload.github.com/dal-go/dalgo-js/tar.gz/04ce7f644fc334da7e471f0be503a7b937c7025d": true
 ```
 
-When pinning a newer adapter commit, replace only the adapter tarball revision with the exact revision shown in that dependency's lockfile.
+Replace `REPLACE_WITH_EXACT_40_CHARACTER_ADAPTER_COMMIT_SHA` with the full 40-character revision shown in the adapter dependency's lockfile.
 
 ## Use
 
